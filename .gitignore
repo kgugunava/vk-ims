@@ -1,0 +1,14 @@
+# OS and editors
+.DS_Store
+.idea/
+.vscode/
+
+# C++ (msgfmt)
+/build/
+/build-*/
+compile_commands.json
+
+# Python (api_tests)
+.venv/
+__pycache__/
+.pytest_cache/

@@ -3,7 +3,9 @@
 #   scripts/in-docker.sh ./scripts/check-msgfmt.sh
 #
 # Steps: clang-format, then GCC and Clang in Release with warnings as errors,
-# then GCC and Clang with AddressSanitizer + UndefinedBehaviorSanitizer.
+# then GCC and Clang with AddressSanitizer + UndefinedBehaviorSanitizer, then
+# GCC's stack-use-after-return check on the tests not labelled heavy (it is off
+# for regular test runs, see msgfmt/tests/CMakeLists.txt).
 # Stops at the first failing step.
 set -euo pipefail
 
@@ -56,7 +58,14 @@ fi
 check_format
 build_and_test gcc-release g++ Release
 build_and_test clang-release clang++ Release
-build_and_test gcc-asan g++ Debug -DMSGFMT_SANITIZE=ON
-build_and_test clang-asan clang++ Debug -DMSGFMT_SANITIZE=ON
+readonly no_uar="-DMSGFMT_TEST_ASAN_OPTIONS=detect_stack_use_after_return=0"
+build_and_test gcc-asan g++ Debug -DMSGFMT_SANITIZE=ON "$no_uar"
+build_and_test clang-asan clang++ Debug -DMSGFMT_SANITIZE=ON "$no_uar"
+
+# Reconfiguring only changes the test environment, so nothing is rebuilt.
+step "gcc-asan: stack use after return, tests not labelled heavy"
+cmake -S "$src_dir" -B "$build_root/gcc-asan" \
+    -DMSGFMT_TEST_ASAN_OPTIONS=detect_stack_use_after_return=1 >/dev/null
+ctest --test-dir "$build_root/gcc-asan" --output-on-failure -LE heavy
 
 step "all checks passed"

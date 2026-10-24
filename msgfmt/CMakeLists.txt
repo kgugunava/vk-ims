@@ -30,6 +30,8 @@ add_library(msgfmt_lib
     src/escape.cpp
     src/parser.cpp
     src/style.cpp
+    src/unicode.cpp
+    src/utf8.cpp
 )
 target_include_directories(msgfmt_lib
     PUBLIC include

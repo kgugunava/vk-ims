@@ -152,9 +152,11 @@ class Proxy:
             query = [(key, str(self._page_size) if key == "per_page" else value) for key, value in query]
         return self.upstream + upstream_path + ("?" + urlencode(query) if query else "")
 
-    def _to_proxy(self, value: str) -> str:
-        """Point URLs of the upstream back at the proxy."""
-        return value.replace(self.upstream, self.url)
+    def _to_proxy(self, value: str, host: str | None) -> str:
+        """Point URLs of the upstream back at the proxy, under the host name
+        the client used: a ghreport in a container reaches the proxy as
+        host.docker.internal, where 127.0.0.1 would be the container itself."""
+        return value.replace(self.upstream, f"http://{host}" if host else self.url)
 
     def forward(self, path: str, headers: Message) -> tuple[int, dict[str, str], bytes]:
         request_headers = {name: headers[name] for name in _REQUEST_HEADERS if headers.get(name) is not None}
@@ -167,7 +169,7 @@ class Proxy:
         except urllib.error.HTTPError as error:
             status, response_headers, body = error.code, error.headers, error.read()
         out_headers = {
-            name: self._to_proxy(response_headers[name])
+            name: self._to_proxy(response_headers[name], headers.get("Host"))
             for name in _RESPONSE_HEADERS if response_headers.get(name) is not None
         }
         return status, out_headers, body

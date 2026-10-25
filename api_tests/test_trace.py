@@ -23,16 +23,34 @@ def test_trace_has_one_record_per_request(proxy, repo, cache_dir, trace_path):
     proxy.fail(500, times=1)  # a retry is an attempt of its own
     report_of(run_ghreport(repo, cache_dir, "--limit", "2", "--trace", str(trace_path), base=proxy.url))
 
-    traced = [entry["url"] for entry in read_trace(trace_path)]
-    sent = [proxy.url + request.path for request in proxy.requests]
+    # Compared without the host, which differs when ghreport runs in Docker.
+    traced = [path_and_query(entry["url"]) for entry in read_trace(trace_path)]
+    sent = [request.path for request in proxy.requests]
     assert traced == sent, f"trace URLs:\n{traced}\nrequests the server saw:\n{sent}"
+
+
+def path_and_query(url: str) -> str:
+    parts = urlsplit(url)
+    return parts.path + ("?" + parts.query if parts.query else "")
+
+
+def same_server(url: str, base_url: str) -> bool:
+    """`url` is on the server at `base_url`. The Docker wrapper
+    (tools/docker_ghreport.sh) deliberately rewrites a local base URL to
+    host.docker.internal, so that host counts as local too."""
+    got, want = urlsplit(url), urlsplit(base_url)
+    local = {"127.0.0.1", "localhost", "host.docker.internal"}
+    same_host = got.hostname == want.hostname or {got.hostname, want.hostname} <= local
+    return same_host and got.scheme == want.scheme and got.port == want.port
 
 
 def test_first_request_matches_contract(repo, cache_dir, trace_path, server):
     report_of(run_ghreport(repo, cache_dir, "--trace", str(trace_path)))
-    url = urlsplit(read_trace(trace_path)[0]["url"])
+    first = read_trace(trace_path)[0]["url"]
+    url = urlsplit(first)
 
-    assert f"{url.scheme}://{url.netloc}{url.path}" == f"{server.base_url}/repos/{repo}/issues"
+    assert same_server(first, server.base_url), f"{first} is not on GITHUB_API_BASE_URL {server.base_url}"
+    assert url.path == urlsplit(server.base_url).path + f"/repos/{repo}/issues"
     assert dict(parse_qsl(url.query)) == {
         "state": "open", "sort": "created", "direction": "asc", "per_page": "100",
     }

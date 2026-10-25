@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kgugunava/vk-ims/service/internal/cache"
 	"github.com/kgugunava/vk-ims/service/internal/trace"
 )
 
@@ -34,6 +35,7 @@ var retryDelays = []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Sec
 type Config struct {
 	BaseURL string        // without a trailing slash
 	Token   string        // empty for unauthenticated requests
+	Cache   *cache.Store  // nil disables conditional requests
 	Trace   *trace.Writer // nil when --trace is not given
 	Logger  *slog.Logger  // nil means slog.Default()
 }
@@ -43,6 +45,7 @@ type Client struct {
 	http    *http.Client
 	baseURL string
 	token   string
+	cache   *cache.Store
 	trace   *trace.Writer
 	logger  *slog.Logger
 	// now and sleep are replaced in tests, so that retry and rate-limit
@@ -66,6 +69,7 @@ func New(cfg Config) *Client {
 		},
 		baseURL: cfg.BaseURL,
 		token:   cfg.Token,
+		cache:   cfg.Cache,
 		trace:   cfg.Trace,
 		logger:  logger,
 		now:     time.Now,
@@ -99,7 +103,13 @@ func (c *Client) FetchPage(ctx context.Context, target string) (Page, error) {
 	retries := 0   // repeats after network errors and 5xx
 	rateWaits := 0 // pauses after rate-limit responses
 	for attempt := 1; ; attempt++ {
-		resp, err := c.do(ctx, target, "")
+		cached, haveCached := c.cache.Get(target)
+		etag := ""
+		if haveCached {
+			etag = cached.ETag
+		}
+
+		resp, err := c.do(ctx, target, etag)
 		if err != nil {
 			c.record(target, resp.status, attempt, false, transportErrorKind(err))
 			if retryErr := c.backoff(ctx, &retries, target, err.Error()); retryErr != nil {
@@ -107,7 +117,7 @@ func (c *Client) FetchPage(ctx context.Context, target string) (Page, error) {
 			}
 			continue
 		}
-		c.record(target, resp.status, attempt, false, "")
+		c.record(target, resp.status, attempt, resp.status == http.StatusNotModified && haveCached, "")
 
 		if resp.status >= http.StatusInternalServerError {
 			if retryErr := c.backoff(ctx, &retries, target, fmt.Sprintf("status %d", resp.status)); retryErr != nil {
@@ -136,7 +146,32 @@ func (c *Client) FetchPage(ctx context.Context, target string) (Page, error) {
 			if err != nil {
 				return Page{}, fmt.Errorf("get %s: %w", target, err)
 			}
-			return Page{Items: items, NextURL: NextLink(resp.header.Get("Link"), target)}, nil
+			link := resp.header.Get("Link")
+			// Only a valid body with a validator is worth keeping.
+			if etag := resp.header.Get("ETag"); etag != "" {
+				entry := cache.Entry{URL: target, ETag: etag, Link: link, Body: resp.body}
+				if err := c.cache.Put(entry); err != nil {
+					c.logger.Warn("cache write failed", "url", target, "error", err)
+				}
+			}
+			return Page{Items: items, NextURL: NextLink(link, target)}, nil
+		case http.StatusNotModified:
+			// The body comes from the cache. A 304 to a request that carried
+			// no If-None-Match breaks the contract: there is nothing to reuse.
+			if !haveCached {
+				return Page{}, fmt.Errorf("get %s: %w: 304 without a conditional request", target, ErrInvalidResponse)
+			}
+			items, err := parseItems(cached.Body)
+			if err != nil {
+				return Page{}, fmt.Errorf("get %s: cached body: %w", target, err)
+			}
+			// A 304 need not repeat the Link header; the one stored with the
+			// 200 keeps pagination going.
+			link := resp.header.Get("Link")
+			if link == "" {
+				link = cached.Link
+			}
+			return Page{Items: items, NextURL: NextLink(link, target)}, nil
 		case http.StatusUnauthorized:
 			return Page{}, fmt.Errorf("get %s: %w", target, ErrUnauthorized)
 		case http.StatusNotFound:

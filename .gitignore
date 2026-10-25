@@ -12,3 +12,7 @@ compile_commands.json
 .venv/
 __pycache__/
 .pytest_cache/
+
+# Go (service)
+/service/ghreport
+.ghreport-cache/

@@ -18,6 +18,7 @@ function(msgfmt_add_test name)
 endfunction()
 
 msgfmt_add_test(api)
+msgfmt_add_test(parser)
 msgfmt_add_test(unicode)
 msgfmt_add_test(utf8)
 

@@ -53,6 +53,14 @@ void TestAppendixA(Checker& check) {
         // The underscores are not at word boundaries.
         Literal("A4", "a_b_c"),
         Literal("A5", "**не закрыто"),
+        // D1: example 9 contradicts rules 3 and 5, and rules take precedence.
+        // As printed, the only `_` that can close italic is the one before
+        // "**", so italic covers "и курсив" (8 units), not just "и".
+        {"A9 as printed", "**жирный _и курсив_**",
+         Message{"жирный и курсив", {Bold(0, 15), Italic(7, 8)}}},
+        // The input that matches the expected output of the example.
+        {"A9 with italic on one word", "**жирный _и_ курсив**",
+         Message{"жирный и курсив", {Bold(0, 15), Italic(7, 1)}}},
         {"A6", "2 \\* 3", Message{"2 * 3", {}}},
         {"A7", "`чат * список`", Message{"чат * список", {Code(0, 12)}}},
         {"A8", "[документация](https://docs.github.com)",
@@ -266,6 +274,50 @@ void TestLinks(Checker& check) {
     }
 }
 
+void TestNesting(Checker& check) {
+    const Case cases[] = {
+        // Rule 10: different styles nest.
+        {"italic inside bold", "**a _b_ c**", Message{"a b c", {Bold(0, 5), Italic(2, 1)}}},
+        {"bold inside italic", "_a **b** c_", Message{"a b c", {Italic(0, 5), Bold(2, 1)}}},
+        {"link inside italic inside bold", "**_[a](u)_**",
+         Message{"a", {Bold(0, 1), Italic(0, 1), Link(0, 1, "u")}}},
+        {"all four styles on one character", "[**_`x`_**](u)",
+         Message{"x", {Link(0, 1, "u"), Bold(0, 1), Italic(0, 1), Code(0, 1)}}},
+
+        // Rule 10: a marker of an already open style is text.
+        {"bold marker inside bold", "**a **b** c**", Message{"a **b c**", {Bold(0, 5)}}},
+        {"italic marker inside italic", "_a _b_ c_", Message{"a _b c_", {Italic(0, 4)}}},
+
+        // Rule 12: no partial overlaps; a closer outside the region is not seen.
+        {"crossing bold and italic", "**a _b** c_", Message{"a _b c_", {Bold(0, 4)}}},
+        {"crossing link and bold", "[a **b](u) c**", Message{"a **b c**", {Link(0, 5, "u")}}},
+        // D2: the closer search does not skip a nested code span, so bold
+        // closes inside what would have been code.
+        {"bold closer inside a code span", "**a `b** c`", Message{"a `b c`", {Bold(0, 4)}}},
+    };
+    for (const Case& c : cases) {
+        Run(check, c);
+    }
+}
+
+void TestRangeOrder(Checker& check) {
+    const Case cases[] = {
+        // Rule 12: by offset first.
+        {"italic before bold", "_a_ **b**", Message{"a b", {Italic(0, 1), Bold(2, 1)}}},
+        {"bold before italic", "**a** _a_", Message{"a a", {Bold(0, 1), Italic(2, 1)}}},
+        // Equal offsets: the longer range first.
+        {"longer bold first", "**_a_ b**", Message{"a b", {Bold(0, 3), Italic(0, 1)}}},
+        {"longer italic first", "_**a** b_", Message{"a b", {Italic(0, 3), Bold(0, 1)}}},
+        // Identical intervals: the style opened earlier first.
+        {"bold opened first", "**_a_**", Message{"a", {Bold(0, 1), Italic(0, 1)}}},
+        {"italic opened first", "_**a**_", Message{"a", {Italic(0, 1), Bold(0, 1)}}},
+        {"code opened last", "_**`a`**_", Message{"a", {Italic(0, 1), Bold(0, 1), Code(0, 1)}}},
+    };
+    for (const Case& c : cases) {
+        Run(check, c);
+    }
+}
+
 void TestEscapes(Checker& check) {
     const Case cases[] = {
         // Rule 9.
@@ -327,6 +379,8 @@ int main() {
     TestItalic(check);
     TestCode(check);
     TestLinks(check);
+    TestNesting(check);
+    TestRangeOrder(check);
     TestEscapes(check);
     TestUtf16Offsets(check);
     TestInputHandling(check);

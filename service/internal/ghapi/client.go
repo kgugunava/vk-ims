@@ -96,7 +96,8 @@ type response struct {
 // FetchPage gets one page of the listing. Every attempt is written to the
 // trace before its outcome is acted on.
 func (c *Client) FetchPage(ctx context.Context, target string) (Page, error) {
-	retries := 0
+	retries := 0   // repeats after network errors and 5xx
+	rateWaits := 0 // pauses after rate-limit responses
 	for attempt := 1; ; attempt++ {
 		resp, err := c.do(ctx, target, "")
 		if err != nil {
@@ -111,6 +112,20 @@ func (c *Client) FetchPage(ctx context.Context, target string) (Page, error) {
 		if resp.status >= http.StatusInternalServerError {
 			if retryErr := c.backoff(ctx, &retries, target, fmt.Sprintf("status %d", resp.status)); retryErr != nil {
 				return Page{}, fmt.Errorf("get %s: %w: status %d", target, retryErr, resp.status)
+			}
+			continue
+		}
+
+		if IsRateLimited(resp.status, resp.header, resp.body) {
+			pause := RateLimitPause(resp.header, c.now())
+			if rateWaits >= maxRateLimitWaits || pause > maxRateLimitPause {
+				return Page{}, fmt.Errorf("get %s: %w: status %d, next attempt in %v",
+					target, ErrRateLimited, resp.status, pause)
+			}
+			rateWaits++
+			c.logger.Warn("rate limited, waiting", "url", target, "status", resp.status, "pause", pause)
+			if err := c.sleep(ctx, pause); err != nil {
+				return Page{}, fmt.Errorf("get %s: %w", target, err)
 			}
 			continue
 		}

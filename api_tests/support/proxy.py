@@ -46,6 +46,7 @@ class Recorded:
     headers: dict[str, str]  # as sent by ghreport, Authorization included
     status: int = 0
     served_next: str | None = None  # the Link rel="next" the proxy answered with
+    served_etag: str | None = None  # the ETag the proxy answered with
 
 
 @dataclass
@@ -188,6 +189,7 @@ class _Handler(BaseHTTPRequestHandler):
 
         record.status = status
         record.served_next = next_link(headers.get("Link"))
+        record.served_etag = headers.get("ETag")
         self.send_response(status)
         for name, value in headers.items():
             self.send_header(name, value)

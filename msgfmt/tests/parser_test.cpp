@@ -29,6 +29,9 @@ Range Italic(std::size_t offset, std::size_t length) {
     return {Style::kItalic, offset, length, ""};
 }
 Range Code(std::size_t offset, std::size_t length) { return {Style::kCode, offset, length, ""}; }
+Range Link(std::size_t offset, std::size_t length, std::string url) {
+    return {Style::kLink, offset, length, std::move(url)};
+}
 
 /// Input that must come out unchanged and without ranges.
 Case Literal(const char* name, std::string input) {
@@ -52,9 +55,12 @@ void TestAppendixA(Checker& check) {
         Literal("A5", "**не закрыто"),
         {"A6", "2 \\* 3", Message{"2 * 3", {}}},
         {"A7", "`чат * список`", Message{"чат * список", {Code(0, 12)}}},
+        {"A8", "[документация](https://docs.github.com)",
+         Message{"документация", {Link(0, 12, "https://docs.github.com")}}},
         // The emoji takes two UTF-16 code units, plus one for the space.
         {"A10", "💅 **ок**", Message{"💅 ок", {Bold(3, 2)}}},
         {"A11", "**💅 ок**", Message{"💅 ок", {Bold(0, 5)}}},
+        Literal("A12", "[текст]()"),
         {"A13", "\\\\", Message{"\\", {}}},
         {"A14", "", Message{}},
         Literal("A15", "_ e_"),
@@ -202,6 +208,64 @@ void TestCode(Checker& check) {
     }
 }
 
+void TestLinks(Checker& check) {
+    const Case cases[] = {
+        // Rule 8.
+        {"link", "[d](u)", Message{"d", {Link(0, 1, "u")}}},
+        {"text after the link", "[a](u)x", Message{"ax", {Link(0, 1, "u")}}},
+        {"link inside text", "see [a](u).", Message{"see a.", {Link(4, 1, "u")}}},
+        {"two links", "[a](u)[b](v)", Message{"ab", {Link(0, 1, "u"), Link(1, 1, "v")}}},
+        {"emoji text", "[😀](u)", Message{"😀", {Link(0, 2, "u")}}},
+        {"non-ASCII url", "[a](https://я.рф)", Message{"a", {Link(0, 1, "https://я.рф")}}},
+        {"markup in the url is not parsed", "[a](u*v_w)", Message{"a", {Link(0, 1, "u*v_w")}}},
+        // D8: `(` is allowed in the url; the first `)` ends it.
+        {"opening parenthesis in the url", "[a](https://x.ru/?q=(1)",
+         Message{"a", {Link(0, 1, "https://x.ru/?q=(1")}}},
+        Literal("empty url", "[a]()"),
+        Literal("empty text", "[](u)"),
+        Literal("space in the url", "[a](u v)"),
+        Literal("tab in the url", "[a](u\tv)"),
+        Literal("no-break space in the url", "[a](u v)"),
+        Literal("space before the parenthesis", "[a] (u)"),
+        Literal("text before the parenthesis", "[a]b(u)"),
+
+        // Rule 4: non-whitespace after `[`. D6: rule 5 holds for `]` too.
+        Literal("space after the bracket", "[ a](u)"),
+        Literal("space before the closing bracket", "[a ](u)"),
+
+        // Rule 6.
+        Literal("only the text", "[a]"),
+        Literal("unclosed url", "[a](u"),
+        Literal("unclosed text", "[a"),
+        Literal("lone closing bracket", "a]b"),
+        Literal("parentheses alone", "(a)"),
+
+        // D7: an escaped `]` is ordinary text and does not end the link text.
+        {"escaped bracket in the text", "[a\\]b](u)", Message{"a]b", {Link(0, 3, "u")}}},
+        {"escaped backslash ends the text", "[a\\\\](u)", Message{"a\\", {Link(0, 2, "u")}}},
+        // D8: the url is taken verbatim, a backslash stays in it.
+        {"backslash in the url", "[a](u\\v)", Message{"a", {Link(0, 1, "u\\v")}}},
+        {"escaped parenthesis does not extend the url", "[a](u\\)v)",
+         Message{"av)", {Link(0, 1, "u\\")}}},
+
+        // The text cannot contain `]`, so the first one ends it.
+        {"bracket inside the text", "[a [b](u)", Message{"a [b", {Link(0, 4, "u")}}},
+
+        // Styles in the text.
+        {"bold text", "[**b**](u)", Message{"b", {Link(0, 1, "u"), Bold(0, 1)}}},
+        {"code text", "[`x`](u)", Message{"x", {Link(0, 1, "u"), Code(0, 1)}}},
+        {"link inside bold", "**[a](u)**", Message{"a", {Bold(0, 1), Link(0, 1, "u")}}},
+        // A failed link only turns the bracket into text.
+        {"bold after a failed link", "[**a**]()", Message{"[a]()", {Bold(1, 1)}}},
+        // The bold closer is the nearest "**", which falls inside the url,
+        // so the link is cut by the end of the bold region.
+        {"bold closer inside the url", "**[a](u**)", Message{"[a](u)", {Bold(0, 5)}}},
+    };
+    for (const Case& c : cases) {
+        Run(check, c);
+    }
+}
+
 void TestEscapes(Checker& check) {
     const Case cases[] = {
         // Rule 9.
@@ -262,6 +326,7 @@ int main() {
     TestBold(check);
     TestItalic(check);
     TestCode(check);
+    TestLinks(check);
     TestEscapes(check);
     TestUtf16Offsets(check);
     TestInputHandling(check);

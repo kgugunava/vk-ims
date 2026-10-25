@@ -32,12 +32,15 @@ using detail::Utf16Length;
 /// Styles open around the region being parsed. A marker of a style that is
 /// already open is plain text (rule 10).
 ///
-/// For bold and italic the nearest-closer rule already guarantees this: an
-/// inner marker could only open if its closer lay inside the region, but that
-/// closer would then have been the nearest one for the outer marker and ended
-/// the region earlier. The check states rule 10 explicitly instead of relying
-/// on that argument, which was checked by comparing output with and without
-/// it on all 2.4M inputs of up to 9 characters over "*_a \".
+/// The other rules already guarantee this, so the check never changes the
+/// result. For bold and italic, an inner marker could only open if its closer
+/// lay inside the region, but that closer would then have been the nearest
+/// one for the outer marker and ended the region earlier. For links, the text
+/// region ends at the first unescaped `]`, leaving an inner `[` no `]` to
+/// pair with. Code content is never parsed. The check states rule 10
+/// explicitly instead of relying on these arguments; they were confirmed by
+/// comparing output with and without it on every input of up to 9 characters
+/// over "*_a \" and up to 8 characters over "[]()a \*" (21.6M inputs).
 class StyleSet {
 public:
     [[nodiscard]] bool Has(Style style) const { return (bits_ & Bit(style)) != 0; }
@@ -139,6 +142,21 @@ private:
                 continue;
             }
 
+            if (c == U'[') {
+                if (!active.Has(Style::kLink)) {
+                    if (const auto link = FindLink(i, end)) {
+                        EmitStyled(Style::kLink, i + 1, link->text_end, active, link->url);
+                        i = link->next;
+                        continue;
+                    }
+                }
+                // Only the bracket becomes text; what follows is parsed as
+                // usual, so in "[**a**]()" the bold still applies.
+                Append(U'[');
+                ++i;
+                continue;
+            }
+
             // A lone '*', and every other character, is plain text.
             Append(c);
             ++i;
@@ -228,10 +246,63 @@ private:
         ranges_.push_back({Range{Style::kCode, start, utf16_size_ - start, std::string()}, order});
     }
 
+    struct LinkParts {
+        std::size_t text_end = 0;  // position of the closing ']'
+        std::string url;           // UTF-8
+        std::size_t next = 0;      // position after the closing ')'
+    };
+
+    /// Rule 8: "[text](url)" with `[` at `open`. The text is non-empty and has
+    /// no unescaped `]` (an escaped one is ordinary text), so the first
+    /// unescaped `]` ends it; rule 5 applies to that `]` too. The url follows
+    /// immediately in parentheses: non-empty, no whitespace, no `)`. It is
+    /// taken verbatim, without escape processing, so a backslash stays part of
+    /// it. Everything must fit inside the region.
+    [[nodiscard]] std::optional<LinkParts> FindLink(std::size_t open, std::size_t end) const {
+        if (!CanOpen(open + 1, end)) {
+            return std::nullopt;
+        }
+
+        std::size_t text_end = open + 1;
+        while (text_end < end && cp_[text_end] != U']') {
+            if (IsEscape(text_end, end)) {
+                ++text_end;  // the escaped character, possibly a ']', is skipped too
+            }
+            ++text_end;
+        }
+        if (text_end >= end || text_end == open + 1 || IsWhitespace(cp_[text_end - 1])) {
+            return std::nullopt;
+        }
+
+        const std::size_t url_begin = text_end + 2;
+        if (url_begin > end || cp_[text_end + 1] != U'(') {
+            return std::nullopt;
+        }
+        std::size_t url_end = url_begin;
+        while (url_end < end && cp_[url_end] != U')') {
+            if (IsWhitespace(cp_[url_end])) {
+                return std::nullopt;
+            }
+            ++url_end;
+        }
+        if (url_end >= end || url_end == url_begin) {
+            return std::nullopt;
+        }
+
+        LinkParts link;
+        link.text_end = text_end;
+        for (std::size_t k = url_begin; k < url_end; ++k) {
+            AppendUtf8(link.url, cp_[k]);
+        }
+        link.next = url_end + 1;
+        return link;
+    }
+
     /// Parses cp_[content_begin, content_end) with `style` added to the
-    /// active set and records a range over the text it produced.
+    /// active set and records a range over the text it produced. `url` is
+    /// non-empty only for links.
     void EmitStyled(Style style, std::size_t content_begin, std::size_t content_end,
-                    StyleSet active) {
+                    StyleSet active, std::string url = std::string()) {
         const std::size_t start = utf16_size_;
         // Taken before the content is parsed, so an outer range always
         // precedes the ranges nested in it.
@@ -242,7 +313,7 @@ private:
         // Content is non-empty and every character in it produces output
         // (an escape pair produces the escaped character).
         assert(utf16_size_ > start);
-        ranges_.push_back({Range{style, start, utf16_size_ - start, std::string()}, order});
+        ranges_.push_back({Range{style, start, utf16_size_ - start, std::move(url)}, order});
     }
 
     void Append(char32_t c) {

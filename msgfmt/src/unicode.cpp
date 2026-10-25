@@ -68,6 +68,12 @@ bool IsLetterOrDigit(char32_t cp) noexcept {
     return Contains(kLetterOrDigitRanges, cp);
 }
 
-bool IsWhitespace(char32_t cp) noexcept { return Contains(kWhitespaceRanges, cp); }
+bool IsWhitespace(char32_t cp) noexcept {
+    // The parser asks this about nearly every character, most of them ASCII.
+    if (cp < 0x80) {
+        return cp == U' ' || (cp >= U'\t' && cp <= U'\r');
+    }
+    return Contains(kWhitespaceRanges, cp);
+}
 
 }  // namespace msgfmt::detail

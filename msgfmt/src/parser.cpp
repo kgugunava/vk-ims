@@ -56,6 +56,95 @@ private:
     unsigned bits_ = 0;
 };
 
+/// For every position, the nearest position at or after it where each kind of
+/// closing marker could stand. Built once in linear time, so each search is a
+/// lookup: scanning the region per opener would make inputs with many
+/// unmatched openers ("**a **a **a ...") quadratic.
+///
+/// Whether position j can close depends only on j and its neighbours, and on
+/// whether j is escaped. Escapes are resolved in one pass from the start of
+/// the input. A region scan would pair backslashes starting at its first
+/// character instead, but every search starts right after an unescaped marker,
+/// never in the middle of a pair, so both give the same pairs.
+class CloserIndex {
+public:
+    explicit CloserIndex(const std::u32string& cp) : at_(cp.size() + 1) {
+        const std::size_t n = cp.size();
+
+        // Left to right: which characters are made literal by a backslash
+        // before them (rule 9).
+        for (std::size_t j = 0; j < n; ++j) {
+            if (cp[j] == U'\\' && j + 1 < n && IsSpecial(cp[j + 1])) {
+                at_[j + 1].escaped = true;
+                ++j;
+            }
+        }
+
+        // Right to left: each entry takes the next entry's answers and
+        // replaces those for which position j itself qualifies.
+        at_[n] = Nearest{n, n, n, n, n, n, false};
+        for (std::size_t j = n; j-- > 0;) {
+            const char32_t c = cp[j];
+            const bool escaped = at_[j].escaped;
+            // Rule 5 for every marker: a closer is preceded by non-whitespace.
+            const bool after_text = j > 0 && !IsWhitespace(cp[j - 1]);
+
+            Nearest next = at_[j + 1];
+            next.escaped = escaped;
+            if (c == U'*' && j + 1 < n && cp[j + 1] == U'*' && !escaped && after_text) {
+                next.bold = j;
+            }
+            // Rule 3: a closing `_` is followed by the end of the input or by
+            // a character that is not a letter or digit.
+            if (c == U'_' && !escaped && after_text &&
+                (j + 1 == n || !IsLetterOrDigit(cp[j + 1]))) {
+                next.italic = j;
+            }
+            // Rule 7: escaping does not work in code, so a backslash cannot
+            // protect a backtick there: in `a\` the second backtick closes.
+            if (c == U'`' && after_text) {
+                next.code = j;
+            }
+            // Rule 8: link text ends at the first unescaped `]`; the url ends
+            // at the first `)`, taken verbatim, and may not contain whitespace.
+            if (c == U']' && !escaped) {
+                next.bracket = j;
+            }
+            if (c == U')') {
+                next.paren = j;
+            }
+            if (IsWhitespace(c)) {
+                next.whitespace = j;
+            }
+            at_[j] = next;
+        }
+    }
+
+    // Each returns the nearest qualifying position >= from, or the input size
+    // if there is none. `from` may be at most the input size.
+    [[nodiscard]] std::size_t Bold(std::size_t from) const { return at_[from].bold; }
+    [[nodiscard]] std::size_t Italic(std::size_t from) const { return at_[from].italic; }
+    [[nodiscard]] std::size_t Code(std::size_t from) const { return at_[from].code; }
+    [[nodiscard]] std::size_t Bracket(std::size_t from) const { return at_[from].bracket; }
+    [[nodiscard]] std::size_t Paren(std::size_t from) const { return at_[from].paren; }
+    [[nodiscard]] std::size_t Whitespace(std::size_t from) const { return at_[from].whitespace; }
+
+private:
+    // One entry per position, so the whole index is a single allocation:
+    // Parse() runs millions of times on short inputs in the property test.
+    struct Nearest {
+        std::size_t bold = 0;
+        std::size_t italic = 0;
+        std::size_t code = 0;
+        std::size_t bracket = 0;
+        std::size_t paren = 0;
+        std::size_t whitespace = 0;
+        bool escaped = false;  // this position itself, not a nearest one
+    };
+
+    std::vector<Nearest> at_;
+};
+
 /// A range plus the position of its opening marker among all opened
 /// ranges, which breaks ties between identical intervals (rule 12).
 struct PendingRange {
@@ -65,7 +154,7 @@ struct PendingRange {
 
 class Parser {
 public:
-    explicit Parser(const std::u32string& input) : cp_(input) {}
+    explicit Parser(const std::u32string& input) : cp_(input), closers_(input) {}
 
     Message Run() {
         ParseRegion(0, cp_.size(), StyleSet{});
@@ -174,24 +263,14 @@ private:
         return content_begin < end && !IsWhitespace(cp_[content_begin]);
     }
 
-    /// Rule 5: the nearest "**" preceded by a non-whitespace character.
-    /// Escaped characters are skipped, so "\**" never closes. The search starts
-    /// one past the content start, so the content is never empty.
+    // The Find*Close functions return the nearest closer that lies inside the
+    // region. The search starts one past the content start, so the content is
+    // never empty. What counts as a closer is defined in CloserIndex.
+
     [[nodiscard]] std::optional<std::size_t> FindBoldClose(std::size_t content_begin,
                                                            std::size_t end) const {
-        std::size_t j = content_begin;
-        while (j + 1 < end) {
-            if (IsEscape(j, end)) {
-                j += 2;
-                continue;
-            }
-            if (j > content_begin && cp_[j] == U'*' && cp_[j + 1] == U'*' &&
-                !IsWhitespace(cp_[j - 1])) {
-                return j;
-            }
-            ++j;
-        }
-        return std::nullopt;
+        const std::size_t j = closers_.Bold(content_begin + 1);
+        return j + 1 < end ? std::optional<std::size_t>(j) : std::nullopt;
     }
 
     /// Rule 3: `_` opens only at a word boundary, so snake_case stays text.
@@ -202,36 +281,16 @@ private:
         return (pos == 0 || !IsLetterOrDigit(cp_[pos - 1])) && CanOpen(pos + 1, end);
     }
 
-    /// Rules 3 and 5: the nearest `_` preceded by non-whitespace and followed
-    /// by the end of the input or a character that is not a letter or digit.
     [[nodiscard]] std::optional<std::size_t> FindItalicClose(std::size_t content_begin,
                                                              std::size_t end) const {
-        std::size_t j = content_begin;
-        while (j < end) {
-            if (IsEscape(j, end)) {
-                j += 2;
-                continue;
-            }
-            if (j > content_begin && cp_[j] == U'_' && !IsWhitespace(cp_[j - 1]) &&
-                (j + 1 == cp_.size() || !IsLetterOrDigit(cp_[j + 1]))) {
-                return j;
-            }
-            ++j;
-        }
-        return std::nullopt;
+        const std::size_t j = closers_.Italic(content_begin + 1);
+        return j < end ? std::optional<std::size_t>(j) : std::nullopt;
     }
 
-    /// Rule 5: the nearest backtick preceded by non-whitespace. Unlike the
-    /// other searches this one ignores backslashes: escaping does not work in
-    /// code (rule 7), so in `a\` the second backtick closes.
     [[nodiscard]] std::optional<std::size_t> FindCodeClose(std::size_t content_begin,
                                                            std::size_t end) const {
-        for (std::size_t j = content_begin + 1; j < end; ++j) {
-            if (cp_[j] == U'`' && !IsWhitespace(cp_[j - 1])) {
-                return j;
-            }
-        }
-        return std::nullopt;
+        const std::size_t j = closers_.Code(content_begin + 1);
+        return j < end ? std::optional<std::size_t>(j) : std::nullopt;
     }
 
     /// Rule 7: code content goes to the output exactly as written, with no
@@ -263,13 +322,7 @@ private:
             return std::nullopt;
         }
 
-        std::size_t text_end = open + 1;
-        while (text_end < end && cp_[text_end] != U']') {
-            if (IsEscape(text_end, end)) {
-                ++text_end;  // the escaped character, possibly a ']', is skipped too
-            }
-            ++text_end;
-        }
+        const std::size_t text_end = closers_.Bracket(open + 1);
         if (text_end >= end || text_end == open + 1 || IsWhitespace(cp_[text_end - 1])) {
             return std::nullopt;
         }
@@ -278,14 +331,8 @@ private:
         if (url_begin > end || cp_[text_end + 1] != U'(') {
             return std::nullopt;
         }
-        std::size_t url_end = url_begin;
-        while (url_end < end && cp_[url_end] != U')') {
-            if (IsWhitespace(cp_[url_end])) {
-                return std::nullopt;
-            }
-            ++url_end;
-        }
-        if (url_end >= end || url_end == url_begin) {
+        const std::size_t url_end = closers_.Paren(url_begin);
+        if (url_end >= end || url_end == url_begin || closers_.Whitespace(url_begin) < url_end) {
             return std::nullopt;
         }
 
@@ -322,6 +369,7 @@ private:
     }
 
     const std::u32string& cp_;
+    const CloserIndex closers_;
     std::string text_;
     std::size_t utf16_size_ = 0;  // length of text_ in UTF-16 code units
     std::vector<PendingRange> ranges_;

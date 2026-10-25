@@ -28,6 +28,7 @@ Range Bold(std::size_t offset, std::size_t length) { return {Style::kBold, offse
 Range Italic(std::size_t offset, std::size_t length) {
     return {Style::kItalic, offset, length, ""};
 }
+Range Code(std::size_t offset, std::size_t length) { return {Style::kCode, offset, length, ""}; }
 
 /// Input that must come out unchanged and without ranges.
 Case Literal(const char* name, std::string input) {
@@ -50,6 +51,7 @@ void TestAppendixA(Checker& check) {
         Literal("A4", "a_b_c"),
         Literal("A5", "**не закрыто"),
         {"A6", "2 \\* 3", Message{"2 * 3", {}}},
+        {"A7", "`чат * список`", Message{"чат * список", {Code(0, 12)}}},
         // The emoji takes two UTF-16 code units, plus one for the space.
         {"A10", "💅 **ок**", Message{"💅 ок", {Bold(3, 2)}}},
         {"A11", "**💅 ок**", Message{"💅 ок", {Bold(0, 5)}}},
@@ -155,6 +157,51 @@ void TestItalic(Checker& check) {
     }
 }
 
+void TestCode(Checker& check) {
+    const Case cases[] = {
+        // Rule 2.
+        {"code", "`c`", Message{"c", {Code(0, 1)}}},
+        {"code inside text", "x `y` z", Message{"x y z", {Code(2, 1)}}},
+        {"whitespace inside is fine", "`a b`", Message{"a b", {Code(0, 3)}}},
+        {"two code ranges", "`a` `b`", Message{"a b", {Code(0, 1), Code(2, 1)}}},
+        {"emoji inside", "`😀`", Message{"😀", {Code(0, 2)}}},
+
+        // Rule 7: content is output as written.
+        {"bold markers inside", "`**a**`", Message{"**a**", {Code(0, 5)}}},
+        {"italic markers inside", "`_a_`", Message{"_a_", {Code(0, 3)}}},
+        {"link inside", "`[a](u)`", Message{"[a](u)", {Code(0, 6)}}},
+        {"backslash is not an escape", "`a\\*b`", Message{"a\\*b", {Code(0, 4)}}},
+        // So a backslash cannot protect the closing backtick either.
+        {"backslash before the closer", "`a\\`", Message{"a\\", {Code(0, 2)}}},
+        {"escaped backslash is two characters", "`\\\\`", Message{"\\\\", {Code(0, 2)}}},
+
+        // Rule 4: non-whitespace after the opener.
+        Literal("space after opener", "` a`"),
+        Literal("newline after opener", "`\na`"),
+        Literal("opener at the very end", "a `"),
+
+        // Rule 5: nearest closer preceded by non-whitespace.
+        {"skips a closer after a space", "`a `b`", Message{"a `b", {Code(0, 4)}}},
+        Literal("only closer follows a space", "`a `"),
+
+        // Rule 6 and D4.
+        Literal("unclosed", "`a"),
+        Literal("empty content", "``"),
+        {"lone backtick as content", "```", Message{"`", {Code(0, 1)}}},
+
+        // Rule 9 outside code.
+        {"escaped opener", "\\`a`", Message{"`a`", {}}},
+
+        // Code next to other styles.
+        {"bold around code", "**`x`**", Message{"x", {Bold(0, 1), Code(0, 1)}}},
+        {"code then bold", "`a` **b**", Message{"a b", {Code(0, 1), Bold(2, 1)}}},
+        {"italic around code", "_`x`_", Message{"x", {Italic(0, 1), Code(0, 1)}}},
+    };
+    for (const Case& c : cases) {
+        Run(check, c);
+    }
+}
+
 void TestEscapes(Checker& check) {
     const Case cases[] = {
         // Rule 9.
@@ -214,6 +261,7 @@ int main() {
     TestAppendixA(check);
     TestBold(check);
     TestItalic(check);
+    TestCode(check);
     TestEscapes(check);
     TestUtf16Offsets(check);
     TestInputHandling(check);

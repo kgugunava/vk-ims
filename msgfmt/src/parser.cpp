@@ -124,6 +124,21 @@ private:
                 continue;
             }
 
+            // No active-set check: code content is never parsed, so a
+            // backtick is never seen while code is open.
+            if (c == U'`') {
+                if (CanOpen(i + 1, end)) {
+                    if (const auto close = FindCodeClose(i + 1, end)) {
+                        EmitCode(i + 1, *close);
+                        i = *close + 1;
+                        continue;
+                    }
+                }
+                Append(U'`');
+                ++i;
+                continue;
+            }
+
             // A lone '*', and every other character, is plain text.
             Append(c);
             ++i;
@@ -186,6 +201,31 @@ private:
             ++j;
         }
         return std::nullopt;
+    }
+
+    /// Rule 5: the nearest backtick preceded by non-whitespace. Unlike the
+    /// other searches this one ignores backslashes: escaping does not work in
+    /// code (rule 7), so in `a\` the second backtick closes.
+    [[nodiscard]] std::optional<std::size_t> FindCodeClose(std::size_t content_begin,
+                                                           std::size_t end) const {
+        for (std::size_t j = content_begin + 1; j < end; ++j) {
+            if (cp_[j] == U'`' && !IsWhitespace(cp_[j - 1])) {
+                return j;
+            }
+        }
+        return std::nullopt;
+    }
+
+    /// Rule 7: code content goes to the output exactly as written, with no
+    /// markup and no escapes, so it holds no nested ranges.
+    void EmitCode(std::size_t content_begin, std::size_t content_end) {
+        const std::size_t start = utf16_size_;
+        const std::size_t order = next_open_order_++;
+        for (std::size_t k = content_begin; k < content_end; ++k) {
+            Append(cp_[k]);
+        }
+        assert(utf16_size_ > start);
+        ranges_.push_back({Range{Style::kCode, start, utf16_size_ - start, std::string()}, order});
     }
 
     /// Parses cp_[content_begin, content_end) with `style` added to the

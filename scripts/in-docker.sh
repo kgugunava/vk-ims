@@ -10,7 +10,7 @@ readonly image="vk-ims-dev"
 readonly repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if ! docker image inspect "$image" >/dev/null 2>&1; then
-    docker build -t "$image" -f "$repo_root/docker/dev.Dockerfile" "$repo_root/docker"
+    docker build -q -t "$image" -f "$repo_root/docker/dev.Dockerfile" "$repo_root/docker" >/dev/null
 fi
 
 tty_flags=()

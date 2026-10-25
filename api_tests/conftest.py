@@ -16,6 +16,7 @@ import pytest
 from support import env as env_module
 from support import reference as reference_module
 from support import runner
+from support.proxy import Proxy
 
 ENV: env_module.Environment
 
@@ -85,6 +86,16 @@ def reference():
 def server():
     """Where and how the suite reaches GITHUB_API_BASE_URL itself."""
     return ENV
+
+
+@pytest.fixture
+def proxy():
+    """A fault-injecting proxy in front of GITHUB_API_BASE_URL; pass
+    base=proxy.url to run_ghreport to go through it."""
+    instance = Proxy(ENV.base_url, ENV.token)
+    instance.start()
+    yield instance
+    instance.stop()
 
 
 @pytest.fixture

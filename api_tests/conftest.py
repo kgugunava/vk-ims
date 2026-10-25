@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from support import env as env_module
+from support import reference as reference_module
 from support import runner
 
 ENV: env_module.Environment
@@ -62,6 +63,28 @@ def repos() -> list[str]:
 def repo(repos: list[str]) -> str:
     """The main repository the tests read."""
     return repos[0]
+
+
+@pytest.fixture(scope="session")
+def reference():
+    """reference(repo, per_page=100): the listing read directly from the
+    server, by the suite's own client. Cached for the session: it is only
+    read, and fewer requests matter against the real, rate-limited GitHub."""
+    cache: dict[tuple[str, int], reference_module.Reference] = {}
+
+    def fetch(repo: str, per_page: int = 100) -> reference_module.Reference:
+        key = (repo, per_page)
+        if key not in cache:
+            cache[key] = reference_module.fetch_listing(ENV.base_url, repo, per_page, ENV.token)
+        return cache[key]
+
+    return fetch
+
+
+@pytest.fixture(scope="session")
+def server():
+    """Where and how the suite reaches GITHUB_API_BASE_URL itself."""
+    return ENV
 
 
 @pytest.fixture

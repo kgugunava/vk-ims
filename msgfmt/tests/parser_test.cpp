@@ -25,6 +25,9 @@ struct Case {
 };
 
 Range Bold(std::size_t offset, std::size_t length) { return {Style::kBold, offset, length, ""}; }
+Range Italic(std::size_t offset, std::size_t length) {
+    return {Style::kItalic, offset, length, ""};
+}
 
 /// Input that must come out unchanged and without ranges.
 Case Literal(const char* name, std::string input) {
@@ -42,6 +45,9 @@ void TestAppendixA(Checker& check) {
     const Case cases[] = {
         {"A1", "**важно**", Message{"важно", {Bold(0, 5)}}},
         {"A2", "Привет, **мир**!", Message{"Привет, мир!", {Bold(8, 3)}}},
+        {"A3", "_курсив_", Message{"курсив", {Italic(0, 6)}}},
+        // The underscores are not at word boundaries.
+        Literal("A4", "a_b_c"),
         Literal("A5", "**не закрыто"),
         {"A6", "2 \\* 3", Message{"2 * 3", {}}},
         // The emoji takes two UTF-16 code units, plus one for the space.
@@ -49,6 +55,7 @@ void TestAppendixA(Checker& check) {
         {"A11", "**💅 ок**", Message{"💅 ок", {Bold(0, 5)}}},
         {"A13", "\\\\", Message{"\\", {}}},
         {"A14", "", Message{}},
+        Literal("A15", "_ e_"),
     };
     for (const Case& c : cases) {
         Run(check, c);
@@ -88,6 +95,60 @@ void TestBold(Checker& check) {
         // D16: a single asterisk is not a marker.
         Literal("single asterisks", "*a*"),
         Literal("single asterisk", "2 * 3"),
+    };
+    for (const Case& c : cases) {
+        Run(check, c);
+    }
+}
+
+void TestItalic(Checker& check) {
+    const Case cases[] = {
+        // Rule 3, opening `_`: start of text or a non-letter, non-digit before it.
+        {"italic", "_b_", Message{"b", {Italic(0, 1)}}},
+        {"after a space", "x _a_ y", Message{"x a y", {Italic(2, 1)}}},
+        {"inside parentheses", "(_a_)", Message{"(a)", {Italic(1, 1)}}},
+        {"after an asterisk", "*_a_", Message{"*a", {Italic(1, 1)}}},
+        {"after a no-break space", " _a_", Message{" a", {Italic(1, 1)}}},
+        {"after an emoji", "😀_a_", Message{"😀a", {Italic(2, 1)}}},
+        Literal("after a Latin letter", "x_a_"),
+        Literal("after a Cyrillic letter", "я_б_"),
+        Literal("after a digit", "1_a_"),
+        Literal("snake_case in a sentence", "use snake_case_name here"),
+        // D9: a combining mark is not a letter, so a decomposed letter does
+        // not block the opener while its precomposed form does.
+        {"after a decomposed short i", "й_a_", Message{"йa", {Italic(2, 1)}}},
+        Literal("after a precomposed short i", "й_a_"),
+
+        // Rule 3, closing `_`: end of text or a non-letter, non-digit after it.
+        {"before a comma", "_a_,", Message{"a,", {Italic(0, 1)}}},
+        {"before an asterisk", "_a_*", Message{"a*", {Italic(0, 1)}}},
+        {"before an emoji", "_a_😀", Message{"a😀", {Italic(0, 1)}}},
+        Literal("before a Latin letter", "_a_b"),
+        Literal("before a Cyrillic letter", "_a_я"),
+        Literal("before a digit", "_a_1"),
+        {"inner underscore of a word is skipped", "_a_b_", Message{"a_b", {Italic(0, 3)}}},
+
+        // Rule 4: non-whitespace after the opener.
+        Literal("space after opener", "_ a_"),
+        Literal("newline after opener", "_\na_"),
+        Literal("no-break space after opener", "_ a_"),
+
+        // Rule 5: nearest closer preceded by non-whitespace.
+        Literal("only closer follows a space", "_a _"),
+        {"skips a closer after a space", "_a _b_", Message{"a _b", {Italic(0, 4)}}},
+        {"two italic ranges", "_a_ _b_", Message{"a b", {Italic(0, 1), Italic(2, 1)}}},
+
+        // Rule 6 and D4.
+        Literal("unclosed", "_a"),
+        Literal("empty content", "__"),
+        {"lone underscore as content", "___", Message{"_", {Italic(0, 1)}}},
+        // The closer `_` is followed by another `_`, which is not a letter;
+        // the inner `_` is text because italic is already open (rule 10).
+        {"dunder name", "__init__", Message{"_init_", {Italic(0, 5)}}},
+
+        // Rule 9 inside italic.
+        {"escaped underscore inside", "_a\\_b_", Message{"a_b", {Italic(0, 3)}}},
+        {"escaped closer", "_a\\_", Message{"_a_", {}}},
     };
     for (const Case& c : cases) {
         Run(check, c);
@@ -152,6 +213,7 @@ int main() {
     Checker check;
     TestAppendixA(check);
     TestBold(check);
+    TestItalic(check);
     TestEscapes(check);
     TestUtf16Offsets(check);
     TestInputHandling(check);

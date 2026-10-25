@@ -24,12 +24,20 @@ namespace msgfmt {
 namespace {
 
 using detail::AppendUtf8;
+using detail::IsLetterOrDigit;
 using detail::IsSpecial;
 using detail::IsWhitespace;
 using detail::Utf16Length;
 
 /// Styles open around the region being parsed. A marker of a style that is
 /// already open is plain text (rule 10).
+///
+/// For bold and italic the nearest-closer rule already guarantees this: an
+/// inner marker could only open if its closer lay inside the region, but that
+/// closer would then have been the nearest one for the outer marker and ended
+/// the region earlier. The check states rule 10 explicitly instead of relying
+/// on that argument, which was checked by comparing output with and without
+/// it on all 2.4M inputs of up to 9 characters over "*_a \".
 class StyleSet {
 public:
     [[nodiscard]] bool Has(Style style) const { return (bits_ & Bit(style)) != 0; }
@@ -103,6 +111,19 @@ private:
                 continue;
             }
 
+            if (c == U'_') {
+                if (!active.Has(Style::kItalic) && CanOpenItalic(i, end)) {
+                    if (const auto close = FindItalicClose(i + 1, end)) {
+                        EmitStyled(Style::kItalic, i + 1, *close, active);
+                        i = *close + 1;
+                        continue;
+                    }
+                }
+                Append(U'_');
+                ++i;
+                continue;
+            }
+
             // A lone '*', and every other character, is plain text.
             Append(c);
             ++i;
@@ -133,6 +154,33 @@ private:
             }
             if (j > content_begin && cp_[j] == U'*' && cp_[j + 1] == U'*' &&
                 !IsWhitespace(cp_[j - 1])) {
+                return j;
+            }
+            ++j;
+        }
+        return std::nullopt;
+    }
+
+    /// Rule 3: `_` opens only at a word boundary, so snake_case stays text.
+    /// The preceding character is taken from the whole input, not the region:
+    /// a region always starts right after a marker, which is never a letter or
+    /// digit, so the choice cannot change the result.
+    [[nodiscard]] bool CanOpenItalic(std::size_t pos, std::size_t end) const {
+        return (pos == 0 || !IsLetterOrDigit(cp_[pos - 1])) && CanOpen(pos + 1, end);
+    }
+
+    /// Rules 3 and 5: the nearest `_` preceded by non-whitespace and followed
+    /// by the end of the input or a character that is not a letter or digit.
+    [[nodiscard]] std::optional<std::size_t> FindItalicClose(std::size_t content_begin,
+                                                             std::size_t end) const {
+        std::size_t j = content_begin;
+        while (j < end) {
+            if (IsEscape(j, end)) {
+                j += 2;
+                continue;
+            }
+            if (j > content_begin && cp_[j] == U'_' && !IsWhitespace(cp_[j - 1]) &&
+                (j + 1 == cp_.size() || !IsLetterOrDigit(cp_[j + 1]))) {
                 return j;
             }
             ++j;

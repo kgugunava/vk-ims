@@ -50,7 +50,7 @@ func TestFetchPage_SendsHeaders(t *testing.T) {
 
 	for _, token := range []string{"secret", ""} {
 		handler.requests = nil
-		client := New(Config{BaseURL: server.URL, Token: token})
+		client := testClient(Config{BaseURL: server.URL, Token: token})
 		if _, err := client.FetchPage(context.Background(), FirstPageURL(server.URL, "o/r")); err != nil {
 			t.Fatalf("FetchPage: %v", err)
 		}
@@ -83,7 +83,7 @@ func TestFetchPage_TokenOnlyForTheAPIHost(t *testing.T) {
 	otherServer := newTestServer(t, other)
 	apiServer := newTestServer(t, &respond{status: http.StatusOK, body: "[]"})
 
-	client := New(Config{BaseURL: apiServer.URL, Token: "secret"})
+	client := testClient(Config{BaseURL: apiServer.URL, Token: "secret"})
 	if _, err := client.FetchPage(context.Background(), otherServer.URL+"/repos/o/r/issues?page=2"); err != nil {
 		t.Fatalf("FetchPage: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestFetchPage_ReturnsItemsAndNext(t *testing.T) {
 		header: http.Header{"Link": {`</repos/o/r/issues?page=2>; rel="next"`}},
 		body:   `[{"number":1},{"number":2}]`,
 	})
-	page, err := New(Config{BaseURL: server.URL}).FetchPage(context.Background(), server.URL+"/repos/o/r/issues")
+	page, err := testClient(Config{BaseURL: server.URL}).FetchPage(context.Background(), server.URL+"/repos/o/r/issues")
 	if err != nil {
 		t.Fatalf("FetchPage: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestFetchPage_StatusAndBodyErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := newTestServer(t, &respond{status: tt.status, body: tt.body})
-			_, err := New(Config{BaseURL: server.URL}).FetchPage(context.Background(), server.URL+"/x")
+			_, err := testClient(Config{BaseURL: server.URL}).FetchPage(context.Background(), server.URL+"/x")
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("error = %v, want %v", err, tt.wantErr)
 			}
@@ -145,7 +145,7 @@ func TestFetchPage_StatusAndBodyErrors(t *testing.T) {
 
 func TestFetchPage_ErrorsDoNotContainToken(t *testing.T) {
 	server := newTestServer(t, &respond{status: http.StatusInternalServerError})
-	_, err := New(Config{BaseURL: server.URL, Token: "secret-token"}).FetchPage(context.Background(), server.URL+"/x")
+	_, err := testClient(Config{BaseURL: server.URL, Token: "secret-token"}).FetchPage(context.Background(), server.URL+"/x")
 	if err == nil || strings.Contains(err.Error(), "secret-token") {
 		t.Errorf("error = %v; want an error without the token", err)
 	}

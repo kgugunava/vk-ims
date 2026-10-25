@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"time"
@@ -25,11 +26,16 @@ type Page struct {
 	NextURL string // the Link rel="next" target; empty on the last page
 }
 
+// Pauses before the repeats of a request that failed on the network or with
+// a 5xx status: at most three repeats.
+var retryDelays = []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+
 // Config holds what a Client needs to reach the API.
 type Config struct {
 	BaseURL string        // without a trailing slash
 	Token   string        // empty for unauthenticated requests
 	Trace   *trace.Writer // nil when --trace is not given
+	Logger  *slog.Logger  // nil means slog.Default()
 }
 
 // Client makes the requests of one run, strictly one at a time.
@@ -38,11 +44,19 @@ type Client struct {
 	baseURL string
 	token   string
 	trace   *trace.Writer
-	now     func() time.Time
+	logger  *slog.Logger
+	// now and sleep are replaced in tests, so that retry and rate-limit
+	// paths run instantly and their pauses can be checked.
+	now   func() time.Time
+	sleep func(ctx context.Context, d time.Duration) error
 }
 
 // New returns a Client for cfg.
 func New(cfg Config) *Client {
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Client{
 		http: &http.Client{
 			Timeout: requestTimeout,
@@ -53,7 +67,22 @@ func New(cfg Config) *Client {
 		baseURL: cfg.BaseURL,
 		token:   cfg.Token,
 		trace:   cfg.Trace,
+		logger:  logger,
 		now:     time.Now,
+		sleep:   sleepContext,
+	}
+}
+
+// sleepContext waits for d or until ctx is cancelled (Ctrl+C), whichever
+// comes first.
+func sleepContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
@@ -67,13 +96,24 @@ type response struct {
 // FetchPage gets one page of the listing. Every attempt is written to the
 // trace before its outcome is acted on.
 func (c *Client) FetchPage(ctx context.Context, target string) (Page, error) {
+	retries := 0
 	for attempt := 1; ; attempt++ {
 		resp, err := c.do(ctx, target, "")
 		if err != nil {
 			c.record(target, resp.status, attempt, false, transportErrorKind(err))
-			return Page{}, fmt.Errorf("get %s: %w: %v", target, ErrRequestFailed, err)
+			if retryErr := c.backoff(ctx, &retries, target, err.Error()); retryErr != nil {
+				return Page{}, fmt.Errorf("get %s: %w: %v", target, retryErr, err)
+			}
+			continue
 		}
 		c.record(target, resp.status, attempt, false, "")
+
+		if resp.status >= http.StatusInternalServerError {
+			if retryErr := c.backoff(ctx, &retries, target, fmt.Sprintf("status %d", resp.status)); retryErr != nil {
+				return Page{}, fmt.Errorf("get %s: %w: status %d", target, retryErr, resp.status)
+			}
+			continue
+		}
 
 		switch resp.status {
 		case http.StatusOK:
@@ -90,6 +130,22 @@ func (c *Client) FetchPage(ctx context.Context, target string) (Page, error) {
 			return Page{}, fmt.Errorf("get %s: %w: status %d", target, ErrRequestFailed, resp.status)
 		}
 	}
+}
+
+// backoff waits before the next repeat of a failed request and counts it in
+// *retries. Once the repeats are used up it returns ErrRequestFailed; if the
+// wait is interrupted, the context's error.
+func (c *Client) backoff(ctx context.Context, retries *int, target, reason string) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if *retries >= len(retryDelays) {
+		return ErrRequestFailed
+	}
+	delay := retryDelays[*retries]
+	*retries++
+	c.logger.Warn("request failed, retrying", "url", target, "reason", reason, "delay", delay)
+	return c.sleep(ctx, delay)
 }
 
 // do sends one GET and reads the whole body. If the body cannot be read, the

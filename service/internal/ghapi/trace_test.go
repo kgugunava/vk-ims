@@ -25,7 +25,7 @@ func tracedClient(t *testing.T, cfg Config) (*Client, func() []map[string]any) {
 		t.Fatal(err)
 	}
 	cfg.Trace = writer
-	client := New(cfg)
+	client := testClient(cfg)
 	client.now = func() time.Time { return time.Date(2026, 10, 14, 12, 0, 0, 0, time.FixedZone("MSK", 3*3600)) }
 
 	entries := func() []map[string]any {
@@ -119,7 +119,7 @@ func TestTrace_NeverContainsToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := New(Config{BaseURL: ts.URL, Token: "secret-token", Trace: writer})
+	client := testClient(Config{BaseURL: ts.URL, Token: "secret-token", Trace: writer})
 	if _, err := client.ListIssues(context.Background(), "o/r", 100, time.Time{}); err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}

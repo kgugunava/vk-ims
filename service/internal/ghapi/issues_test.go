@@ -72,7 +72,7 @@ func TestListIssues_FollowsAllPages(t *testing.T) {
 	server := threePages()
 	ts := newTestServer(t, server)
 
-	issues, err := New(Config{BaseURL: ts.URL}).ListIssues(context.Background(), "o/r", 100, time.Time{})
+	issues, err := testClient(Config{BaseURL: ts.URL}).ListIssues(context.Background(), "o/r", 100, time.Time{})
 	if err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestListIssues_StopsAtLimit(t *testing.T) {
 	server := threePages()
 	ts := newTestServer(t, server)
 
-	issues, err := New(Config{BaseURL: ts.URL}).ListIssues(context.Background(), "o/r", 3, time.Time{})
+	issues, err := testClient(Config{BaseURL: ts.URL}).ListIssues(context.Background(), "o/r", 3, time.Time{})
 	if err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestListIssues_StopsWithoutNextLink(t *testing.T) {
 	server := &pagedServer{pages: map[string]string{"1": issuesJSON(1)}}
 	ts := newTestServer(t, server)
 
-	if _, err := New(Config{BaseURL: ts.URL}).ListIssues(context.Background(), "o/r", 100, time.Time{}); err != nil {
+	if _, err := testClient(Config{BaseURL: ts.URL}).ListIssues(context.Background(), "o/r", 100, time.Time{}); err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
 	if len(server.requests) != 1 {
@@ -122,7 +122,7 @@ func TestListIssues_RemovesDuplicatesAcrossPages(t *testing.T) {
 	server.pages["2"] = issuesJSON(2, 3, 4) // issue 2 shifted onto page 2
 	ts := newTestServer(t, server)
 
-	issues, err := New(Config{BaseURL: ts.URL}).ListIssues(context.Background(), "o/r", 100, time.Time{})
+	issues, err := testClient(Config{BaseURL: ts.URL}).ListIssues(context.Background(), "o/r", 100, time.Time{})
 	if err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestListIssues_LoopingNextLink(t *testing.T) {
 	server.next["2"] = "/repos/o/r/issues?per_page=100&page=2" // points at itself
 	ts := newTestServer(t, server)
 
-	_, err := New(Config{BaseURL: ts.URL}).ListIssues(context.Background(), "o/r", 100, time.Time{})
+	_, err := testClient(Config{BaseURL: ts.URL}).ListIssues(context.Background(), "o/r", 100, time.Time{})
 	if !errors.Is(err, ErrInvalidResponse) {
 		t.Errorf("error = %v, want ErrInvalidResponse", err)
 	}
@@ -147,7 +147,7 @@ func TestListIssues_ErrorOnLaterPage(t *testing.T) {
 	server.status = map[string]int{"2": http.StatusNotFound}
 	ts := newTestServer(t, server)
 
-	issues, err := New(Config{BaseURL: ts.URL}).ListIssues(context.Background(), "o/r", 100, time.Time{})
+	issues, err := testClient(Config{BaseURL: ts.URL}).ListIssues(context.Background(), "o/r", 100, time.Time{})
 	if !errors.Is(err, ErrNotFound) || issues != nil {
 		t.Errorf("ListIssues = %v, %v; want no issues and ErrNotFound", issues, err)
 	}
@@ -157,7 +157,7 @@ func TestListIssues_InvalidItem(t *testing.T) {
 	server := &pagedServer{pages: map[string]string{"1": `[{"number":"one"}]`}}
 	ts := newTestServer(t, server)
 
-	_, err := New(Config{BaseURL: ts.URL}).ListIssues(context.Background(), "o/r", 100, time.Time{})
+	_, err := testClient(Config{BaseURL: ts.URL}).ListIssues(context.Background(), "o/r", 100, time.Time{})
 	if !errors.Is(err, ErrInvalidResponse) || CodeOf(err) != report.InvalidResponse {
 		t.Errorf("error = %v, want ErrInvalidResponse", err)
 	}

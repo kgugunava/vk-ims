@@ -30,6 +30,15 @@ def test_issues_sorted_by_created_at_then_number(repo, cache_dir):
         )
 
 
+def test_issues_are_sorted_even_when_a_page_is_not(proxy, reference, repo, cache_dir):
+    """A server that follows the contract already sends issues in order, so
+    a service that never sorts would pass the test above by luck. Here the
+    proxy reverses the first page; the report must still be sorted."""
+    proxy.transform(lambda items: list(reversed(items)))
+    report = report_of(run_ghreport(repo, cache_dir, "--limit", "100000", base=proxy.url))
+    assert report["repos"][0]["issues"] == expected_issues(reference(repo), 100000)
+
+
 def test_count_matches_issues_length(repo, missing_repo, cache_dir):
     report = json.loads(run_ghreport(f"{repo},{missing_repo}", cache_dir).stdout)
     for entry in report["repos"]:

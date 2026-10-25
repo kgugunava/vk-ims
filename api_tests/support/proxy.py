@@ -10,7 +10,9 @@ What it can do:
 - forward, then truncate the body or edit the JSON array of issues;
 - rewrite per_page, so any repository spans several pages, and rewrite the
   Link and Location headers to point back at the proxy;
-- record the requests ghreport sent, with their headers.
+- record the requests ghreport sent, with their headers;
+- serve a real repository under a made-up name, which gives a test a second
+  working repository whatever data the server has.
 
 It replaces ghreport's Authorization header with GITHUB_TOKEN, or drops it,
 so a token made up by a test never reaches the real server.
@@ -23,6 +25,7 @@ import threading
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit
@@ -43,7 +46,9 @@ Items = list[dict[str, Any]]
 class Recorded:
     """A request ghreport sent to the proxy, and what it got back."""
     path: str
-    headers: dict[str, str]  # as sent by ghreport, Authorization included
+    # As sent by ghreport, Authorization included. A Message, so lookups
+    # ignore case: Go sends X-GitHub-Api-Version as X-Github-Api-Version.
+    headers: Message
     status: int = 0
     served_next: str | None = None  # the Link rel="next" the proxy answered with
     served_etag: str | None = None  # the ETag the proxy answered with
@@ -84,6 +89,7 @@ class Proxy:
         self._faults: list[_Rule] = []
         self._edits: list[_Rule] = []
         self._page_size: int | None = None
+        self._aliases: dict[str, str] = {}
         self._opener = urllib.request.build_opener(_NoRedirect)
         self.requests: list[Recorded] = []
 
@@ -122,6 +128,10 @@ class Proxy:
         """Forward per_page=size instead of what ghreport asked for."""
         self._page_size = size
 
+    def alias(self, name: str, repo: str) -> None:
+        """Serve `repo` under the repository name `name` (owner/repo)."""
+        self._aliases[name] = repo
+
     # Request handling.
 
     def _take(self, rules: list[_Rule], path: str) -> _Rule | None:
@@ -134,17 +144,20 @@ class Proxy:
 
     def _upstream_url(self, path: str) -> str:
         parts = urlsplit(path)
+        upstream_path = parts.path
+        for name, repo in self._aliases.items():
+            upstream_path = upstream_path.replace(f"/repos/{name}/", f"/repos/{repo}/")
         query = parse_qsl(parts.query, keep_blank_values=True)
         if self._page_size is not None:
             query = [(key, str(self._page_size) if key == "per_page" else value) for key, value in query]
-        return self.upstream + parts.path + ("?" + urlencode(query) if query else "")
+        return self.upstream + upstream_path + ("?" + urlencode(query) if query else "")
 
     def _to_proxy(self, value: str) -> str:
         """Point URLs of the upstream back at the proxy."""
         return value.replace(self.upstream, self.url)
 
-    def forward(self, path: str, headers: dict[str, str]) -> tuple[int, dict[str, str], bytes]:
-        request_headers = {name: headers[name] for name in _REQUEST_HEADERS if name in headers}
+    def forward(self, path: str, headers: Message) -> tuple[int, dict[str, str], bytes]:
+        request_headers = {name: headers[name] for name in _REQUEST_HEADERS if headers.get(name) is not None}
         if self._token:
             request_headers["Authorization"] = f"Bearer {self._token}"
         request = urllib.request.Request(self._upstream_url(path), headers=request_headers)
@@ -176,7 +189,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 (name fixed by BaseHTTPRequestHandler)
         proxy = self.proxy
-        record = Recorded(self.path, {name: value for name, value in self.headers.items()})
+        record = Recorded(self.path, self.headers)
         with proxy._lock:
             proxy.requests.append(record)
 

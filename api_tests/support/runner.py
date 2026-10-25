@@ -31,6 +31,13 @@ def run_ghreport(
     return subprocess.run(cmd, capture_output=True, text=True, env=process_env, timeout=RUN_TIMEOUT_SECONDS)
 
 
+def run_args(binary: str, base_url: str, *args: str) -> subprocess.CompletedProcess[str]:
+    """Runs ghreport with exactly `args`, nothing added."""
+    process_env = dict(os.environ, GITHUB_API_BASE_URL=base_url)
+    return subprocess.run([binary, *args], capture_output=True, text=True, env=process_env,
+                          timeout=RUN_TIMEOUT_SECONDS)
+
+
 def report_of(proc: subprocess.CompletedProcess[str]) -> dict[str, Any]:
     """The report of a successful run."""
     assert proc.returncode == 0, f"exit code {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"

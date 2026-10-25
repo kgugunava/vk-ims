@@ -44,6 +44,11 @@ def report_of(proc: subprocess.CompletedProcess[str]) -> dict[str, Any]:
     return runner.report_of(proc)
 
 
+def run_ghreport_args(*args: str) -> subprocess.CompletedProcess[str]:
+    """Runs ghreport with exactly these arguments, for argument errors."""
+    return runner.run_args(ENV.binary, ENV.base_url, *args)
+
+
 @pytest.fixture
 def cache_dir(tmp_path: Path) -> Path:
     """A cache directory of the test's own, so tests never share cached state."""
@@ -96,6 +101,15 @@ def proxy():
     instance.start()
     yield instance
     instance.stop()
+
+
+@pytest.fixture
+def alias_repo(proxy, repo: str) -> str:
+    """A second working repository: the main one under another name, served
+    by the proxy (tests using it must run ghreport with base=proxy.url)."""
+    name = f"alias-{uuid.uuid4().hex[:8]}/{repo.split('/')[1]}"
+    proxy.alias(name, repo)
+    return name
 
 
 @pytest.fixture

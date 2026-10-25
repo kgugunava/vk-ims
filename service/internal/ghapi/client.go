@@ -31,6 +31,9 @@ type Page struct {
 // a 5xx status: at most three repeats.
 var retryDelays = []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
 
+// Redirects followed for one page before giving up.
+const maxRedirects = 5
+
 // Config holds what a Client needs to reach the API.
 type Config struct {
 	BaseURL string        // without a trailing slash
@@ -102,6 +105,7 @@ type response struct {
 func (c *Client) FetchPage(ctx context.Context, target string) (Page, error) {
 	retries := 0   // repeats after network errors and 5xx
 	rateWaits := 0 // pauses after rate-limit responses
+	redirects := 0
 	for attempt := 1; ; attempt++ {
 		cached, haveCached := c.cache.Get(target)
 		etag := ""
@@ -141,6 +145,21 @@ func (c *Client) FetchPage(ctx context.Context, target string) (Page, error) {
 		}
 
 		switch resp.status {
+		case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+			http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+			// GitHub answers 301 for a renamed repository and 302/307 for
+			// temporary moves; the request is repeated at Location. The new
+			// URL is a new request in the trace, starting at attempt 1.
+			location := resp.header.Get("Location")
+			if location == "" || redirects >= maxRedirects {
+				return Page{}, fmt.Errorf("get %s: %w: status %d, redirect %d of at most %d",
+					target, ErrRequestFailed, resp.status, redirects+1, maxRedirects)
+			}
+			redirects++
+			c.logger.Info("following redirect", "from", target, "status", resp.status)
+			target = resolve(target, location)
+			attempt, retries, rateWaits = 0, 0, 0
+			continue
 		case http.StatusOK:
 			items, err := parseItems(resp.body)
 			if err != nil {

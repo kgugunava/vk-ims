@@ -21,12 +21,13 @@ msgfmt_add_test(api)
 msgfmt_add_test(escape)
 msgfmt_add_test(json)
 msgfmt_add_test(parser)
+msgfmt_add_test(property)
 msgfmt_add_test(unicode)
 msgfmt_add_test(utf8)
 
 # Tests that make millions of calls are labelled heavy, so slow sanitizer
 # configurations can skip them with `ctest -LE heavy`.
-set_tests_properties(msgfmt.utf8 PROPERTIES LABELS heavy)
+set_tests_properties(msgfmt.property msgfmt.utf8 PROPERTIES LABELS heavy)
 
 # msgfmt_add_cli_test(<name> <exit code> [args...]) runs the msgfmt binary with
 # cli/<name>.in on stdin and compares its stdout with cli/<name>.out byte for

@@ -5,7 +5,8 @@
 # Steps: clang-format, then GCC and Clang in Release with warnings as errors,
 # then GCC and Clang with AddressSanitizer + UndefinedBehaviorSanitizer, then
 # GCC's stack-use-after-return check on the tests not labelled heavy (it is off
-# for regular test runs, see msgfmt/tests/CMakeLists.txt).
+# for regular test runs, see msgfmt/tests/CMakeLists.txt), then the build
+# commands exactly as the task gives them.
 # Stops at the first failing step.
 set -euo pipefail
 
@@ -67,5 +68,31 @@ step "gcc-asan: stack use after return, tests not labelled heavy"
 cmake -S "$src_dir" -B "$build_root/gcc-asan" \
     -DMSGFMT_TEST_ASAN_OPTIONS=detect_stack_use_after_return=1 >/dev/null
 ctest --test-dir "$build_root/gcc-asan" --output-on-failure -LE heavy
+
+# The exact commands from the task: default generator and compiler, none of
+# our options. A reviewer may also pass the sanitizers through
+# CMAKE_CXX_FLAGS instead of MSGFMT_SANITIZE; both must build and pass.
+# Warnings are checked by the steps above (-Werror); here the build output is
+# also grepped, because without MSGFMT_WERROR a warning would not fail it.
+task_build() {
+    local name="$1"
+    shift
+    local build_dir="$build_root/$name"
+    rm -rf "$build_dir"
+
+    step "$name: commands from the task"
+    cmake -S "$src_dir" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release "$@" >/dev/null
+    local log
+    log="$(cmake --build "$build_dir" 2>&1)"
+    if grep -qi "warning" <<<"$log"; then
+        echo "$log"
+        echo "error: the build printed warnings" >&2
+        exit 1
+    fi
+    ctest --test-dir "$build_dir" --output-on-failure
+}
+
+task_build task-plain
+task_build task-sanitizer-flags "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined"
 
 step "all checks passed"

@@ -1,0 +1,3 @@
+# Exact stdin/stdout bytes: no line-ending conversion, no diff as text.
+* -text
+.gitattributes text

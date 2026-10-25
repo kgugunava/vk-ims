@@ -28,6 +28,7 @@ endif()
 
 add_library(msgfmt_lib
     src/escape.cpp
+    src/json.cpp
     src/parser.cpp
     src/style.cpp
     src/unicode.cpp
